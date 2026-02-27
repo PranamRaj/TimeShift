@@ -1,3 +1,18 @@
+Many government offices and public service centers face heavy crowd congestion. People often visit without knowing the waiting time, leading to overcrowding, frustration, and reduced efficiency for both citizens and staff.
+
+There is currently no smart system that provides accurate, real-time crowd insights while also allowing administrative control.
+
+AI-Based Prediction
+The system analyzes past data to predict expected crowd levels.
+It helps users plan their visit based on historical trends.
+This prediction updates dynamically to improve accuracy over time.
+
+Manual Prediction Mode
+Staff can manually enter the current crowd data.
+When manual mode is activated, AI prediction is temporarily disabled.
+This ensures accurate real-time updates during unexpected situations like holidays or technical delays
+
+
 # React + Vite
 
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
