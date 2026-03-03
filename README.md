@@ -29,3 +29,24 @@ The React Compiler is not enabled on this template because of its impact on dev 
 ## Expanding the ESLint configuration
 
 If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+
+## Deploy to GitHub Pages
+
+This project is configured for deployment at:
+
+- `https://PranamRaj.github.io/TimeShift`
+
+### Deploy command
+
+```bash
+npm install
+npm run deploy
+```
+
+### First-time GitHub Pages setup
+
+1. Push this project to a GitHub repository named `TimeShift`.
+2. In GitHub, open **Settings → Pages**.
+3. Under **Build and deployment**, set **Source** to **Deploy from a branch**.
+4. Select branch **gh-pages** and folder **/(root)**, then save.
+5. Wait 1–2 minutes and open the site URL above.
