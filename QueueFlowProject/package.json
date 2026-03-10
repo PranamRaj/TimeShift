@@ -10,9 +10,12 @@
     "deploy": "gh-pages -d dist",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "firebase:login": "npx firebase-tools login",
+    "firebase:deploy": "npm run build && npx firebase-tools deploy --only hosting"
   },
   "dependencies": {
+    "firebase": "^12.10.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },

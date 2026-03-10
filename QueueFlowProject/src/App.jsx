@@ -1,4 +1,10 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { doc, onSnapshot, setDoc, serverTimestamp } from "firebase/firestore";
+import { signOut } from "firebase/auth";
+import { db } from "./firebase";
+import { auth } from "./firebase";
+import CustomerAuth from "./CustomerAuth";
+import ProviderAuth from "./ProviderAuth";
 
 /* ════════════════════════════════════════════════════════════════
    HISTORICAL DATA  — 14 days × 13 hourly slots × 4 services
@@ -133,6 +139,8 @@ const ORGS = [
    STORAGE
 ════════════════════════════════════════════════════════════════ */
 const STORAGE_KEY = "queueflow_ai_v1";
+const SESSION_KEY = "queueflow_session_v1";
+const CLOUD_DOC_REF = doc(db, "queueflow", "state");
 
 function qKey(orgId, locId, svcId) { return `${orgId}::${locId}::${svcId}`; }
 
@@ -159,6 +167,64 @@ function loadQueues() {
 function saveQueues(q) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(q));
+  } catch { }
+}
+
+function applyQueueDecay(queues, nowTs = Date.now()) {
+  let changed = false;
+  const next = { ...queues };
+
+  for (const key of Object.keys(queues)) {
+    const q = queues[key];
+    const currentCount = q?.count;
+    const isOpen = q?.open !== false;
+
+    if (!isOpen) continue;
+    if (typeof currentCount !== "number" || currentCount <= 0) continue;
+
+    const minutesPerPerson = Math.max(1, Number(q.serviceTime) || 1);
+    const baselineTs = q.lastUpdated || nowTs;
+    if (baselineTs >= nowTs) continue;
+
+    const elapsedMs = nowTs - baselineTs;
+    const servedPeople = Math.floor(elapsedMs / (minutesPerPerson * 60 * 1000));
+    if (servedPeople <= 0) continue;
+
+    const reducedCount = Math.max(0, currentCount - servedPeople);
+    const advancedTs = baselineTs + servedPeople * minutesPerPerson * 60 * 1000;
+
+    next[key] = {
+      ...q,
+      count: reducedCount,
+      lastUpdated: advancedTs,
+    };
+    changed = true;
+  }
+
+  return changed ? next : queues;
+}
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !parsed.name || !parsed.role || !parsed.email) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function saveSession(session) {
+  try {
+    localStorage.setItem(SESSION_KEY, JSON.stringify(session));
+  } catch { }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY);
   } catch { }
 }
 
@@ -773,12 +839,69 @@ export default function App() {
   const [selectedOrg, setSelectedOrg] = useState(ORGS[0]);
   const [selectedLoc, setSelectedLoc] = useState(ORGS[0].locations[0]);
   const [mode, setMode] = useState("citizen");
+  const [authTab, setAuthTab] = useState("customer");
+  const [session, setSession] = useState(loadSession);
   // refresh timestamp for AI predictions (30s interval)
   const now = usePredictions();
+  const cloudSyncReadyRef = useRef(false);
+  const lastCloudHashRef = useRef("");
 
   useEffect(() => {
     saveQueues(queues);
   }, [queues]);
+
+  useEffect(() => {
+    const unsub = onSnapshot(
+      CLOUD_DOC_REF,
+      (snap) => {
+        if (!snap.exists()) {
+          cloudSyncReadyRef.current = true;
+          return;
+        }
+
+        const cloudQueues = snap.data()?.queues;
+        if (!cloudQueues) {
+          cloudSyncReadyRef.current = true;
+          return;
+        }
+
+        const merged = { ...buildDefaults(), ...cloudQueues };
+        const incomingHash = JSON.stringify(merged);
+        lastCloudHashRef.current = incomingHash;
+
+        setQueues((prev) => {
+          const prevHash = JSON.stringify(prev);
+          return prevHash === incomingHash ? prev : merged;
+        });
+
+        cloudSyncReadyRef.current = true;
+      },
+      () => {
+        cloudSyncReadyRef.current = true;
+      }
+    );
+
+    return () => unsub();
+  }, []);
+
+  useEffect(() => {
+    if (!cloudSyncReadyRef.current) return;
+
+    const hash = JSON.stringify(queues);
+    if (hash === lastCloudHashRef.current) return;
+
+    lastCloudHashRef.current = hash;
+    setDoc(
+      CLOUD_DOC_REF,
+      { queues, updatedAt: serverTimestamp() },
+      { merge: true }
+    ).catch(() => { });
+  }, [queues]);
+
+  useEffect(() => {
+    if (!session) return;
+    setMode(session.role === "provider" ? "staff" : "citizen");
+  }, [session]);
 
   const handleOrgChange = (org) => {
     setSelectedOrg(org);
@@ -795,6 +918,80 @@ export default function App() {
   }, []);
 
   const grandTotal = Object.values(queues).reduce((a, q) => a + (q.count || 0), 0);
+  const canAccessStaff = session?.role === "provider";
+
+  const handleAuthSuccess = (authPayload) => {
+    setSession(authPayload);
+    saveSession(authPayload);
+    setMode(authPayload.role === "provider" ? "staff" : "citizen");
+  };
+
+  const logout = async () => {
+    try {
+      await signOut(auth);
+    } catch {
+      // Local logout still proceeds even if remote sign-out fails.
+    }
+    clearSession();
+    setSession(null);
+  };
+
+  useEffect(() => {
+    if (!session) return;
+    if (session.role !== "provider" && mode !== "citizen") {
+      setMode("citizen");
+    }
+  }, [session, mode]);
+
+  if (!session) {
+    return (
+      <div style={{ minHeight: "100vh", background: "linear-gradient(160deg,#f8fafc,#eef2ff)", padding: "28px 20px", fontFamily: "Inter, system-ui, sans-serif" }}>
+        <div style={{ maxWidth: 980, margin: "0 auto", display: "grid", gap: 18 }}>
+          <div style={{ borderRadius: 20, padding: "22px 24px", background: "#fff", border: "1.5px solid #e2e8f0", boxShadow: "0 8px 30px rgba(30,41,59,0.08)" }}>
+            <p style={{ margin: 0, fontSize: 10, color: "#94a3b8", letterSpacing: "0.18em", textTransform: "uppercase", fontFamily: "DM Mono, monospace" }}>
+              QueueFlow Access
+            </p>
+            <h1 style={{ margin: "8px 0 4px", fontSize: 34, lineHeight: 1.1, color: "#1e293b", fontFamily: "Fraunces, serif", letterSpacing: "-0.03em" }}>
+              Sign In To Continue
+            </h1>
+            <p style={{ margin: 0, fontSize: 14, color: "#64748b", maxWidth: 560 }}>
+              Choose your login type below. You can sign in if you already have an account or sign up to create a new one.
+            </p>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center", background: "#fff", border: "1.5px solid #e2e8f0", borderRadius: 14, padding: 6, width: "fit-content" }}>
+            {[{ id: "customer", label: "Customer", activeColor: "#2563eb" }, { id: "provider", label: "Service Provider", activeColor: "#dc2626" }].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setAuthTab(tab.id)}
+                style={{
+                  all: "unset",
+                  cursor: "pointer",
+                  padding: "8px 14px",
+                  borderRadius: 10,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  fontFamily: "DM Mono, monospace",
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  color: authTab === tab.id ? "#fff" : "#64748b",
+                  background: authTab === tab.id ? tab.activeColor : "transparent",
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {authTab === "customer" ? (
+            <CustomerAuth onAuthSuccess={handleAuthSuccess} />
+          ) : (
+            <ProviderAuth onAuthSuccess={handleAuthSuccess} />
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f8fafc", fontFamily: "Inter, system-ui, sans-serif" }}>
@@ -830,6 +1027,11 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#fff7ed", border: "1.5px solid #fed7aa", borderRadius: 10, padding: "5px 10px" }}>
+            <span style={{ fontSize: 11, fontWeight: 700, color: "#c2410c", fontFamily: "DM Mono, monospace" }}>
+              Hello, {session.name}
+            </span>
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, background: "linear-gradient(135deg,#7c3aed10,#6d28d908)", border: "1px solid #7c3aed25", borderRadius: 10, padding: "5px 11px" }}>
             <BrainIcon size={13} pulse={true} />
             <span style={{ fontSize: 11, fontWeight: 700, color: "#7c3aed", fontFamily: "DM Mono, monospace" }}>AI On</span>
@@ -839,10 +1041,29 @@ export default function App() {
             <span style={{ fontSize: 12, fontWeight: 700, color: "#1e293b", fontFamily: "DM Mono, monospace" }}>{grandTotal} queued</span>
           </div>
           <div style={{ display: "flex", background: "#f1f5f9", border: "1.5px solid #e2e8f0", borderRadius: 11, padding: 3, gap: 3 }}>
-            {[["citizen", "👁 Public"], ["staff", "⚙️ Staff"]].map(([m, label]) => (
+            {[["citizen", "👁 Public"], ...(canAccessStaff ? [["staff", "⚙️ Staff"]] : [])].map(([m, label]) => (
               <button key={m} onClick={() => setMode(m)} style={{ all: "unset", cursor: "pointer", padding: "7px 15px", borderRadius: 9, fontSize: 12, fontWeight: 700, fontFamily: "DM Mono, monospace", background: mode === m ? "#1e293b" : "transparent", color: mode === m ? "#fff" : "#64748b", boxShadow: mode === m ? "0 2px 8px rgba(0,0,0,0.15)" : "none" }}>{label}</button>
             ))}
           </div>
+          <button
+            onClick={logout}
+            style={{
+              all: "unset",
+              cursor: "pointer",
+              padding: "7px 12px",
+              borderRadius: 9,
+              border: "1.5px solid #fecaca",
+              background: "#fef2f2",
+              color: "#b91c1c",
+              fontSize: 11,
+              fontWeight: 700,
+              fontFamily: "DM Mono, monospace",
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+            }}
+          >
+            Logout
+          </button>
         </div>
       </header>
 
@@ -850,7 +1071,11 @@ export default function App() {
         <Sidebar selectedOrg={selectedOrg} selectedLoc={selectedLoc} queues={queues} onOrgChange={handleOrgChange} onLocChange={setSelectedLoc} now={now} />
         <main style={{ flex: 1, overflowY: "auto", padding: "28px 36px", background: "#f1f5f9" }}>
           <div key={`${selectedOrg.id}-${selectedLoc.id}-${mode}`}>
-            {mode === "citizen" ? <CitizenView org={selectedOrg} location={selectedLoc} queues={queues} now={now} /> : <StaffView org={selectedOrg} location={selectedLoc} queues={queues} onUpdate={updateQueue} now={now} />}
+            {mode === "staff" && canAccessStaff ? (
+              <StaffView org={selectedOrg} location={selectedLoc} queues={queues} onUpdate={updateQueue} now={now} />
+            ) : (
+              <CitizenView org={selectedOrg} location={selectedLoc} queues={queues} now={now} />
+            )}
           </div>
         </main>
       </div>
