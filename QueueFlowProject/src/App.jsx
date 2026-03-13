@@ -160,48 +160,18 @@ function loadQueues() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return { ...buildDefaults(), ...JSON.parse(raw) };
-  } catch { }
+  } catch {
+    // Ignore malformed local cache and fall back to defaults.
+  }
   return buildDefaults();
 }
 
 function saveQueues(q) {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(q));
-  } catch { }
-}
-
-function applyQueueDecay(queues, nowTs = Date.now()) {
-  let changed = false;
-  const next = { ...queues };
-
-  for (const key of Object.keys(queues)) {
-    const q = queues[key];
-    const currentCount = q?.count;
-    const isOpen = q?.open !== false;
-
-    if (!isOpen) continue;
-    if (typeof currentCount !== "number" || currentCount <= 0) continue;
-
-    const minutesPerPerson = Math.max(1, Number(q.serviceTime) || 1);
-    const baselineTs = q.lastUpdated || nowTs;
-    if (baselineTs >= nowTs) continue;
-
-    const elapsedMs = nowTs - baselineTs;
-    const servedPeople = Math.floor(elapsedMs / (minutesPerPerson * 60 * 1000));
-    if (servedPeople <= 0) continue;
-
-    const reducedCount = Math.max(0, currentCount - servedPeople);
-    const advancedTs = baselineTs + servedPeople * minutesPerPerson * 60 * 1000;
-
-    next[key] = {
-      ...q,
-      count: reducedCount,
-      lastUpdated: advancedTs,
-    };
-    changed = true;
+  } catch {
+    // Ignore storage write failures (e.g. private browsing restrictions).
   }
-
-  return changed ? next : queues;
 }
 
 function loadSession() {
@@ -219,13 +189,17 @@ function loadSession() {
 function saveSession(session) {
   try {
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
-  } catch { }
+  } catch {
+    // Session persistence is best-effort.
+  }
 }
 
 function clearSession() {
   try {
     localStorage.removeItem(SESSION_KEY);
-  } catch { }
+  } catch {
+    // No-op if storage is unavailable.
+  }
 }
 
 /* ════════════════════════════════════════════════════════════════
@@ -838,9 +812,9 @@ export default function App() {
   const [queues, setQueues] = useState(loadQueues);
   const [selectedOrg, setSelectedOrg] = useState(ORGS[0]);
   const [selectedLoc, setSelectedLoc] = useState(ORGS[0].locations[0]);
-  const [mode, setMode] = useState("citizen");
-  const [authTab, setAuthTab] = useState("customer");
   const [session, setSession] = useState(loadSession);
+  const [mode, setMode] = useState(() => (loadSession()?.role === "provider" ? "staff" : "citizen"));
+  const [authTab, setAuthTab] = useState("customer");
   // refresh timestamp for AI predictions (30s interval)
   const now = usePredictions();
   const cloudSyncReadyRef = useRef(false);
@@ -898,11 +872,6 @@ export default function App() {
     ).catch(() => { });
   }, [queues]);
 
-  useEffect(() => {
-    if (!session) return;
-    setMode(session.role === "provider" ? "staff" : "citizen");
-  }, [session]);
-
   const handleOrgChange = (org) => {
     setSelectedOrg(org);
     setSelectedLoc(org.locations[0]);
@@ -935,13 +904,6 @@ export default function App() {
     clearSession();
     setSession(null);
   };
-
-  useEffect(() => {
-    if (!session) return;
-    if (session.role !== "provider" && mode !== "citizen") {
-      setMode("citizen");
-    }
-  }, [session, mode]);
 
   if (!session) {
     return (
@@ -995,7 +957,7 @@ export default function App() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f8fafc", fontFamily: "Inter, system-ui, sans-serif" }}>
-      {/* global styles and responsive tweaks */}
+      {/* app-level styles and responsive tweaks */}
       <style>{`
         * { box-sizing: border-box; }
         html, body, #root { height: 100%; margin: 0; }
