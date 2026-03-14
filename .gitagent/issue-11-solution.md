@@ -1,7 +1,7 @@
 # Issue #11 Automated Solution
 
 ## Summary
-not a good feature
+due to the bad weather
 
 ## Proposed fix
 - Added this generated change file to document the solution path.
