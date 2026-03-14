@@ -1,7 +1,7 @@
 # Issue #11 Automated Solution
 
 ## Summary
-not a good feature
+this is a problem
 
 ## Proposed fix
 - Added this generated change file to document the solution path.
